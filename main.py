@@ -1,4 +1,5 @@
 import os
+import random  # <-- ADD THIS LINE HERE
 import asyncio
 import itertools
 import urllib.parse
@@ -9,7 +10,7 @@ import httpx
 import pandas as pd
 import numpy as np
 from pydantic import BaseModel
-from dotenv import load_dotenv # <-- Add this
+from dotenv import load_dotenv
 
 # Load the hidden variables from your .env file
 load_dotenv()
