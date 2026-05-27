@@ -45,7 +45,7 @@ export default function App() {
     }
 
     try {
-      const response = await fetch('https://valorant-roster-assigner.onrender.com', {
+      const response = await fetch('https://valorant-roster-assigner.onrender.com/api/optimize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
