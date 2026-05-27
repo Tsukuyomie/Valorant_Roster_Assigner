@@ -1,5 +1,5 @@
 import os
-import random  # <-- ADD THIS LINE HERE
+import random
 import asyncio
 import itertools
 import urllib.parse
@@ -12,7 +12,7 @@ import numpy as np
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Load the hidden variables from your .env file
+# Load environment variables
 load_dotenv()
 
 app = FastAPI(
@@ -20,13 +20,21 @@ app = FastAPI(
     root_path=""
 )
 
+# Enable CORS for React Frontend communication
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://valorant-roster-assigner.vercel.app", 
+        "http://localhost:5173", 
+        "*"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # --- 1. Configuration & Constants ---
-# Safely pull the key from the environment instead of hardcoding it
-HENRIK_API_KEY = os.getenv("HENRIK_API_KEY") 
-
-if not HENRIK_API_KEY:
-    print("CRITICAL WARNING: API Key is missing. Check your .env file or Render variables.")
-
+HENRIK_API_KEY = os.getenv("HENRIK_API_KEY")
 API_BASE_URL = "https://api.henrikdev.xyz/valorant/v1/lifetime/matches"
 
 AGENT_ROLES = {
@@ -49,7 +57,6 @@ MAP_BLUEPRINTS = {
     "Pearl": {"roles": ["Duelist", "Controller", "Initiator", "Initiator", "Sentinel"]}
 }
 
-# --- 2. Input Data Models ---
 class PlayerInput(BaseModel):
     name: str
     tag: str
@@ -59,7 +66,11 @@ class OptimizationRequest(BaseModel):
     map_name: str
     players: List[PlayerInput]
 
-# --- 3. Asynchronous Data Ingestion Engine ---
+@app.get("/")
+async def health_check():
+    return {"status": "Backend is ALIVE and running!"}
+
+# --- 2. Data Ingestion Engine ---
 async def fetch_single_player_mastery(
     client: httpx.AsyncClient, region: str, name: str, tag: str, target_map: str
 ):
@@ -67,15 +78,14 @@ async def fetch_single_player_mastery(
     safe_tag = urllib.parse.quote(tag.strip())
     url = f"{API_BASE_URL}/{region}/{safe_name}/{safe_tag}"
     headers = {"Authorization": HENRIK_API_KEY}
-    # Removed the 'map' parameter here to avoid case-sensitive API drops.
-    params = {"mode": "competitive"}
+    params = {"size": 100}
 
     try:
-        await asyncio.sleep(random.uniform(0.1, 0.8))
-        response = await client.get(url, headers=headers, params=params, timeout=15.0)
+        await asyncio.sleep(random.uniform(0.1, 0.4))
+        response = await client.get(url, headers=headers, params=params, timeout=20.0)
 
         if response.status_code != 200:
-            print(f"API Error for {name}#{tag}: {response.status_code}")
+            print(f"❌ API Error for {name}#{tag}: Status {response.status_code}")
             return f"{name}#{tag}", {}
 
         data = response.json().get("data", [])
@@ -83,88 +93,111 @@ async def fetch_single_player_mastery(
             return f"{name}#{tag}", {}
 
         records = []
-        for match in data:
+        for idx, match in enumerate(data):
             meta = match.get("meta", {})
             match_map = meta.get("map", {}).get("name", "")
             
-            # Manual python map filtering (case-insensitive)
             if match_map.lower() != target_map.lower():
                 continue
 
             stats = match.get("stats", {})
-            player_team = stats.get("team", "")
-            teams = match.get("teams", {})
+            player_team = stats.get("team")
+            if not player_team: continue
 
-            # Bulletproof team score extraction (handles red vs Red, blue vs Blue)
+            teams = match.get("teams", {})
             player_score = teams.get(player_team.lower(), 0)
             enemy_team = "blue" if player_team.lower() == "red" else "red"
             enemy_score = teams.get(enemy_team, 0)
+            
             won = 1 if player_score > enemy_score else 0
+            kills = stats.get("kills", 0)
+            deaths = stats.get("deaths", 0)
+            combat_score = stats.get("score", 0)
 
-            # Bulletproof agent name extraction
             agent_name = stats.get("character", {}).get("name", "").title()
-            # Edge case fix for KAY/O
             if agent_name == "Kay/O": agent_name = "KAY/O"
 
-            records.append({ "agent": agent_name, "win": won })
+            recency_weight = 0.95 ** idx 
+
+            if agent_name:
+                records.append({
+                    "agent": agent_name,
+                    "win": won,
+                    "kills": kills,
+                    "deaths": deaths,
+                    "combat_score": combat_score,
+                    "weight": recency_weight
+                })
 
         if not records:
             return f"{name}#{tag}", {}
 
         df = pd.DataFrame(records)
-        summary = (
-            df.groupby("agent")
-            .agg(matches_played=("win", "count"), wins=("win", "sum"))
-            .reset_index()
+        df["weighted_win"] = df["win"] * df["weight"]
+        
+        summary = df.groupby("agent").agg(
+            matches=("win", "count"),
+            weighted_wins=("weighted_win", "sum"),
+            total_weight=("weight", "sum"),
+            total_kills=("kills", "sum"),
+            total_deaths=("deaths", "sum"),
+            avg_combat_score=("combat_score", "mean")
+        ).reset_index()
+
+        summary["win_rate"] = summary["weighted_wins"] / summary["total_weight"]
+        summary["kd_ratio"] = summary["total_kills"] / summary["total_deaths"].replace(0, 1)
+
+        summary["raw_score"] = (
+            (summary["win_rate"] * 50) + 
+            (summary["kd_ratio"] * 15) + 
+            (summary["avg_combat_score"] * 0.1) + 
+            (summary["matches"] * 2)
         )
 
-        summary["mastery_score"] = (
-            (summary["matches_played"] * 10) + (summary["wins"] * 25)
-        ).astype(int)
+        max_val = summary["raw_score"].max()
+        summary["mastery_score"] = (summary["raw_score"] / max_val * 100 if max_val > 0 else 0).astype(int)
 
-        mastery_map = dict(zip(summary["agent"], summary["mastery_score"]))
-        return f"{name}#{tag}", mastery_map
+        print(f"✅ Harvested stats for {name}#{tag} on {target_map}")
+        return f"{name}#{tag}", dict(zip(summary["agent"], summary["mastery_score"]))
 
     except Exception as e:
-        print(f"Exception while pulling data for {name}#{tag}: {str(e)}")
+        print(f"🚨 Exception pulling data for {name}#{tag}: {str(e)}")
         return f"{name}#{tag}", {}
 
-# --- 4. Core API Optimization Endpoint ---
+# --- 3. Dynamic Optimization Logic Engine ---
 @app.post("/api/optimize")
 async def optimize_roster(request: OptimizationRequest):
-    if len(request.players) != 5:
-        raise HTTPException(status_code=400, detail="Exactly 5 players are required.")
+    num_players = len(request.players)
+    if num_players not in [1, 2, 3, 5]:
+        raise HTTPException(status_code=400, detail="Supported party sizes are 1, 2, 3, or 5.")
 
     blueprint = MAP_BLUEPRINTS.get(request.map_name)
     if not blueprint:
-        raise HTTPException(
-            status_code=400, detail=f"Strategic blueprint for {request.map_name} not found."
-        )
+        raise HTTPException(status_code=400, detail="Map blueprint setup not configured.")
 
     player_profiles = {}
 
     async with httpx.AsyncClient() as client:
         tasks = [
-            fetch_single_player_mastery(
-                client, request.region, player.name, player.tag, request.map_name
-            )
-            for player in request.players
+            fetch_single_player_mastery(client, request.region, p.name, p.tag, request.map_name)
+            for p in request.players
         ]
         results = await asyncio.gather(*tasks)
-
-        for player_identifier, mastery_map in results:
-            player_profiles[player_identifier] = mastery_map
+        for player_id, mastery_map in results:
+            player_profiles[player_id] = mastery_map
 
     best_score = -1
     best_roster = []
     player_keys = list(player_profiles.keys())
 
-    for permutation in itertools.permutations(player_keys):
+    # Map the given players onto 'num_players' distinct composition slots
+    for slot_indices in itertools.permutations(range(5), num_players):
         current_team_score = 0
         current_roster = []
 
-        for index, player_id in enumerate(permutation):
-            target_role = blueprint["roles"][index]
+        for i, player_id in enumerate(player_keys):
+            slot_idx = slot_indices[i]
+            target_role = blueprint["roles"][slot_idx]
             
             best_agent_for_role = "No Data / Unplayed"
             highest_role_score = -1 
@@ -175,14 +208,12 @@ async def optimize_roster(request: OptimizationRequest):
                     best_agent_for_role = played_agent
             
             current_team_score += highest_role_score if highest_role_score != -1 else 0
-            current_roster.append(
-                {
-                    "player": player_id,
-                    "role": target_role,
-                    "agent": best_agent_for_role,
-                    "score": highest_role_score if highest_role_score != -1 else 0,
-                }
-            )
+            current_roster.append({
+                "player": player_id,
+                "role": target_role,
+                "agent": best_agent_for_role,
+                "score": highest_role_score if highest_role_score != -1 else 0,
+            })
 
         if current_team_score > best_score:
             best_score = current_team_score
@@ -191,18 +222,5 @@ async def optimize_roster(request: OptimizationRequest):
     return {
         "map": request.map_name,
         "total_score": best_score,
-        "roster": best_roster,
+        "roster": best_roster
     }
-
-app.add_middleware(
-    CORSMiddleware,
-    # Ensure there is absolutely NO trailing slash at the end of the Vercel URL here
-    allow_origins=[
-        "https://valorant-roster-assigner.vercel.app", 
-        "http://localhost:5173", 
-        "*"
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
