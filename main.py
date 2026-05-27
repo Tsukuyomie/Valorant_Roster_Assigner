@@ -9,8 +9,16 @@ from pydantic import BaseModel
 import urllib.parse
 import random
 
-app = FastAPI(title="Valorant Real-Time Optimizer API")
+app = FastAPI(
+    title="Valorant Advanced Optimization Engine",
+    root_path="" # This explicitly tells Render not to offset the routing
+)
 
+# Add a simple health check endpoint at the very root to test if the server is awake
+@app.get("/")
+async def health_check():
+    return {"status": "Backend is ALIVE and running!"}
+    
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
