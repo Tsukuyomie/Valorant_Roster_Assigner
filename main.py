@@ -192,3 +192,16 @@ async def optimize_roster(request: OptimizationRequest):
         "total_score": best_score,
         "roster": best_roster,
     }
+
+app.add_middleware(
+    CORSMiddleware,
+    # Ensure there is absolutely NO trailing slash at the end of the Vercel URL here
+    allow_origins=[
+        "https://valorant-roster-assigner.vercel.app", 
+        "http://localhost:5173", 
+        "*"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
