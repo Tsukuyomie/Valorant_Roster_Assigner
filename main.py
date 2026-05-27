@@ -1,34 +1,31 @@
+import os
 import asyncio
 import itertools
+import urllib.parse
 from typing import List
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import pandas as pd
+import numpy as np
 from pydantic import BaseModel
-import urllib.parse
-import random
+from dotenv import load_dotenv # <-- Add this
+
+# Load the hidden variables from your .env file
+load_dotenv()
 
 app = FastAPI(
     title="Valorant Advanced Optimization Engine",
-    root_path="" # This explicitly tells Render not to offset the routing
-)
-
-# Add a simple health check endpoint at the very root to test if the server is awake
-@app.get("/")
-async def health_check():
-    return {"status": "Backend is ALIVE and running!"}
-    
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    root_path=""
 )
 
 # --- 1. Configuration & Constants ---
-HENRIK_API_KEY = "HDEV-9743f939-8beb-47fa-bd0b-575d106baf5e"
+# Safely pull the key from the environment instead of hardcoding it
+HENRIK_API_KEY = os.getenv("HENRIK_API_KEY") 
+
+if not HENRIK_API_KEY:
+    print("CRITICAL WARNING: API Key is missing. Check your .env file or Render variables.")
+
 API_BASE_URL = "https://api.henrikdev.xyz/valorant/v1/lifetime/matches"
 
 AGENT_ROLES = {
